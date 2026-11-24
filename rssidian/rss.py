@@ -12,7 +12,7 @@ from tqdm import tqdm
 import logging
 from rich.progress import Progress, TextColumn, BarColumn, SpinnerColumn, TimeElapsedColumn, TimeRemainingColumn, TaskProgressColumn, MofNCompleteColumn
 
-from .models import Feed, Article
+from .models import Feed, Article, make_entry_key
 from .config import Config
 
 # Configure logging
@@ -567,18 +567,39 @@ def process_feed(
         jina_enhanced_count = 0
         with_summary_count = 0
         with_value_count = 0
+
+        # Sessions are created with autoflush=False, so pending inserts are
+        # invisible to the duplicate query below. Track what this fetch has
+        # already staged to avoid a UNIQUE violation at commit time.
+        seen_entry_keys = set()
+        seen_urls = set()
         
         for entry, published_date in sorted_entries:
             guid = entry.get('id', entry.get('link', ''))
             if not guid:
                 continue
-            
+
             # Get the article URL first to check for URL-based duplicates
             article_url = entry.get('link', guid)
-            
-            # Check if article already exists by GUID or URL
+
+            # Deduplicate within this source only. The persisted identity is
+            # the source-scoped entry key, so the same short GUID reused by
+            # another subscription is stored as its own article. A URL match
+            # is only treated as a duplicate inside the same feed (the feed
+            # republished an entry under a new GUID); cross-feed URL matches
+            # are recorded so both sources remain retrievable.
+            entry_key = make_entry_key(feed.id, guid)
+            if entry_key in seen_entry_keys or (
+                article_url and article_url in seen_urls
+            ):
+                continue
+            url_conflict = (
+                (Article.feed_id == feed.id) & (Article.url == article_url)
+                if article_url
+                else False
+            )
             existing_article = db_session.query(Article).filter(
-                (Article.guid == guid) | (Article.url == article_url)
+                (Article.entry_key == entry_key) | url_conflict
             ).first()
             if existing_article:
                 continue
@@ -624,6 +645,7 @@ def process_feed(
                 title=entry.get('title', 'Untitled'),
                 url=entry.get('link', ''),
                 guid=guid,
+                entry_key=entry_key,
                 description=entry.get('summary', ''),
                 content=clean_content,
                 author=entry.get('author', ''),
@@ -704,6 +726,10 @@ def process_feed(
                 logger.info(f"Total analysis time for article '{new_article.title[:50]}': {total_analysis_duration:.2f}s")
             
             db_session.add(new_article)
+            seen_entry_keys.add(entry_key)
+            if article_url:
+                seen_urls.add(article_url)
+            seen_urls.add(new_article.url)
             new_article_count += 1
         
         # Update feed last updated timestamp if new articles were found

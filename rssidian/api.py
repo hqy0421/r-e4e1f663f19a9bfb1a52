@@ -28,6 +28,8 @@ class ArticleResponse(BaseModel):
     feed_title: str
     title: str
     url: str
+    guid: Optional[str] = None
+    entry_key: Optional[str] = None
     published_at: Optional[str] = None
     summary: Optional[str] = None
     quality_tier: Optional[str] = None
@@ -95,19 +97,23 @@ def create_api(config: Config) -> FastAPI:
         - **limit**: Maximum number of articles to return
         - **offset**: Number of articles to skip
         """
-        articles = db.query(Article).order_by(Article.published_at.desc()).offset(offset).limit(limit).all()
-        
+        articles = db.query(Article).order_by(
+            Article.published_at.desc(), Article.id.desc()
+        ).offset(offset).limit(limit).all()
+
         response = []
         for article in articles:
             feed = db.query(Feed).filter_by(id=article.feed_id).first()
             feed_title = feed.title if feed else "Unknown Feed"
-            
+
             response.append({
                 "id": article.id,
                 "feed_id": article.feed_id,
                 "feed_title": feed_title,
                 "title": article.title,
                 "url": article.url,
+                "guid": article.guid,
+                "entry_key": article.entry_key,
                 "published_at": article.published_at.isoformat() if article.published_at else None,
                 "summary": article.summary,
                 "quality_tier": article.quality_tier,
@@ -139,6 +145,7 @@ def create_api(config: Config) -> FastAPI:
             "title": article.title,
             "url": article.url,
             "guid": article.guid,
+            "entry_key": article.entry_key,
             "description": article.description,
             "content": article.content,
             "author": article.author,
@@ -269,6 +276,7 @@ def create_api(config: Config) -> FastAPI:
                 "subscriptions": "/api/v1/mcp/subscriptions",
                 "articles": "/api/v1/mcp/articles",
                 "article_content": "/api/v1/mcp/articles/{article_id}/content",
+                "shared_url_sources": "/api/v1/mcp/articles/shared-url-sources?url={url}",
                 "search": "/api/v1/mcp/search",
                 "digest": "/api/v1/mcp/digest",
                 "feed_stats": "/api/v1/mcp/feed-stats",
@@ -323,6 +331,20 @@ def create_api(config: Config) -> FastAPI:
             
         return result
     
+    # MCP - Report shared URL sources
+    @app.get("/api/v1/mcp/articles/shared-url-sources", tags=["MCP"])
+    def mcp_shared_url_sources(
+        url: str = Query(..., description="Article URL to look up"),
+        db: Session = Depends(get_db)
+    ):
+        """
+        Report every source that published the given article URL.
+
+        - **url**: Article URL to look up
+        """
+        mcp = ModelContextProtocol(config, db)
+        return {"url": url, "sources": mcp.get_shared_url_sources(url)}
+
     # MCP - Search articles
     @app.get("/api/v1/mcp/search", tags=["MCP"])
     def mcp_search_articles(

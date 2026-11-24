@@ -88,9 +88,10 @@ class ModelContextProtocol:
         
         if min_quality_tier:
             query = query.filter(Article.quality_tier <= min_quality_tier)  # S < A < B < C < D
-        
-        # Order by published date (newest first)
-        query = query.order_by(Article.published_at.desc())
+
+        # Order by published date (newest first), then by id so that two
+        # sources sharing a publication time paginate deterministically.
+        query = query.order_by(Article.published_at.desc(), Article.id.desc())
         
         # Apply pagination
         articles = query.offset(offset).limit(limit).all()
@@ -106,6 +107,8 @@ class ModelContextProtocol:
                 "feed_title": feed_title,
                 "title": article.title,
                 "url": article.url,
+                "guid": article.guid,
+                "entry_key": article.entry_key,
                 "published_at": article.published_at.isoformat() if article.published_at else None,
                 "summary": article.summary,
                 "quality_tier": article.quality_tier,
@@ -140,6 +143,7 @@ class ModelContextProtocol:
             "title": article.title,
             "url": article.url,
             "guid": article.guid,
+            "entry_key": article.entry_key,
             "description": article.description,
             "content": article.content,
             "author": article.author,
@@ -171,6 +175,23 @@ class ModelContextProtocol:
         """
         return self.processor.search(query, relevance_threshold, max_results)
     
+    def get_shared_url_sources(self, url: str) -> List[Dict[str, Any]]:
+        """
+        Report which sources published the same article URL.
+
+        Two subscriptions can legitimately carry the same article URL (for
+        example, a shared link between aggregators). Those records are kept
+        distinct by their source-scoped entry keys; this exposes all of them
+        so the duplication can be identified explicitly.
+
+        Args:
+            url: Article URL to look up
+
+        Returns:
+            List of source records, one per stored article with this URL
+        """
+        return self.processor.find_shared_url_sources(url)
+
     def get_digest(self, days_back: int = 7) -> Dict[str, Any]:
         """
         Get a digest of high-value articles from the specified period.

@@ -976,6 +976,9 @@ Provide a comprehensive summary that synthesizes information from all sources.""
                         "id": article.id,
                         "title": article.title,
                         "feed": feed.title if feed else "Unknown Feed",
+                        "feed_id": article.feed_id,
+                        "guid": article.guid,
+                        "entry_key": article.entry_key,
                         "url": article.url,
                         "published_at": article.published_at,
                         "summary": article.summary,
@@ -990,6 +993,45 @@ Provide a comprehensive summary that synthesizes information from all sources.""
 
         # Limit to max_results
         return results[:max_results]
+
+    def find_shared_url_sources(self, url: str) -> List[Dict[str, Any]]:
+        """Report every source that published an article with the same URL.
+
+        Distinct subscriptions writing the same short GUID are separate
+        entries by design, but a genuinely shared article URL is a fact worth
+        surfacing rather than silently collapsing. This returns all matching
+        records (across feeds) so callers can see that two sources really do
+        point at one article.
+
+        Args:
+            url: Article URL to look up.
+
+        Returns:
+            List of dicts with article id, feed id, feed title, guid and the
+            source-scoped entry key. Empty if the URL is unknown.
+        """
+        if not url:
+            return []
+
+        matches = (
+            self.db_session.query(Article, Feed)
+            .join(Feed, Article.feed_id == Feed.id)
+            .filter(Article.url == url)
+            .order_by(Article.feed_id, Article.id)
+            .all()
+        )
+
+        return [
+            {
+                "article_id": article.id,
+                "feed_id": article.feed_id,
+                "feed_title": feed.title,
+                "guid": article.guid,
+                "entry_key": article.entry_key,
+                "shared": len(matches) > 1,
+            }
+            for article, feed in matches
+        ]
 
     def _generate_excerpt(self, text: str, query: str, max_length: int = 300) -> str:
         """
@@ -1317,16 +1359,21 @@ Provide a comprehensive summary that synthesizes information from all sources.""
                 reverse=True
             )
 
-            # First, deduplicate by URL - keep the highest quality version of each URL
+            # Deduplicate repeated entries from the same source, keeping the
+            # highest quality version. The key includes feed_id deliberately:
+            # when two different sources publish the same article URL both
+            # records are kept, so the shared URL stays visible instead of
+            # silently dropping the later-read source.
             url_to_best_article = {}
             for article in sorted_articles:
-                if article.url not in url_to_best_article:
-                    url_to_best_article[article.url] = article
+                source_url_key = (article.feed_id, article.url)
+                if source_url_key not in url_to_best_article:
+                    url_to_best_article[source_url_key] = article
                 else:
                     # Keep the article with higher quality tier (already sorted by quality)
                     # Since articles are sorted by quality, the first one is already the best
                     continue
-            
+
             deduplicated_articles = list(url_to_best_article.values())
             
             # Group similar articles for display - use improved similarity detection
